@@ -359,7 +359,7 @@ function loginStudent(id, password) {
         String(credData[i][2]).trim() === password
       ) {
         valid = true;
-        // Fetch existing profile data (Columns G-L are indices 6-11)
+        // Fetch existing profile data (Columns G-L are indices 6-11, Avatar is index 4, Setup Completed is index 13)
         profileData = {
           fatherName: credData[i][6] || "",
           fatherContact: credData[i][7] || "",
@@ -367,6 +367,8 @@ function loginStudent(id, password) {
           motherContact: credData[i][9] || "",
           address: credData[i][10] || "",
           email: credData[i][11] || "",
+          avatarUrl: credData[i][4] || "",
+          setupCompleted: credData[i][13] || false,
         };
         break;
       }
@@ -874,17 +876,43 @@ function getStudentQRCode(id) {
 
 function getStudentAvatar(id) {
   try {
+    const ss = SpreadsheetApp.openById(MASTER_ID);
+    const credSheet = ss.getSheetByName("Credentials");
+    if (credSheet) {
+      const credData = credSheet.getDataRange().getValues();
+      for (let i = 1; i < credData.length; i++) {
+        if (String(credData[i][0]).trim() === String(id).trim()) {
+          const avatarUrl = credData[i][4]; // Column E (index 4)
+          if (avatarUrl) {
+              if(avatarUrl.startsWith("data:")) {
+                 return avatarUrl;
+              } else {
+                  try {
+                      const blob = DriveApp.getFileById(avatarUrl).getBlob();
+                      return "data:" + blob.getContentType() + ";base64," + Utilities.base64Encode(blob.getBytes());
+                  } catch(e) {}
+              }
+          }
+          break;
+        }
+      }
+    }
+
+    // Fallback if not in database yet (e.g. from an old setup)
     const files = DriveApp.getFolderById(PROFILE_FOLDER_ID).searchFiles(
       'title contains "' + id + '"',
     );
     if (files.hasNext()) {
       const blob = files.next().getBlob();
-      return (
+      const dataUrl = (
         "data:" +
         blob.getContentType() +
         ";base64," +
         Utilities.base64Encode(blob.getBytes())
       );
+      // Save it back to db for future
+      uploadStudentAvatar(id, dataUrl);
+      return dataUrl;
     }
     return null;
   } catch (err) {
@@ -900,30 +928,49 @@ function getMultipleAvatars(ids) {
     let validIds = ids.filter((id) => id && id !== "-");
     if (validIds.length === 0) return avatars;
 
+    const ss = SpreadsheetApp.openById(MASTER_ID);
+    const credSheet = ss.getSheetByName("Credentials");
+    if (credSheet) {
+      const credData = credSheet.getDataRange().getValues();
+      for (let i = 1; i < credData.length; i++) {
+        let studentId = String(credData[i][0]).trim();
+        let idx = validIds.indexOf(studentId);
+        if (idx > -1) {
+          const avatarUrl = credData[i][4]; // Column E (index 4)
+          if (avatarUrl) {
+            avatars[studentId] = avatarUrl;
+            validIds.splice(idx, 1);
+          }
+        }
+      }
+    }
+
+    if (validIds.length === 0) return avatars;
+
+    // Fallback for remaining IDs
     const folder = DriveApp.getFolderById(PROFILE_FOLDER_ID);
-    const files = folder.getFiles(); // 2. Grab all files once (Much faster than looping searches)
+    const files = folder.getFiles();
 
     while (files.hasNext()) {
       let file = files.next();
       let name = file.getName();
 
       for (let i = 0; i < validIds.length; i++) {
-        // If the file name matches a valid Student ID (using exact match/regex to prevent collision like "123" matching "1234")
-        // Word boundary \b fails with underscores (e.g. 123_avatar.jpg), so we check for non-digits instead.
         let regex = new RegExp("(^|[^0-9])" + validIds[i] + "([^0-9]|$)");
         if (regex.test(name)) {
           let blob = file.getBlob();
-          avatars[validIds[i]] =
+          const dataUrl =
             "data:" +
             blob.getContentType() +
             ";base64," +
             Utilities.base64Encode(blob.getBytes());
-          // Remove the ID from our search list so we don't waste time looking for it again
+          avatars[validIds[i]] = dataUrl;
+          uploadStudentAvatar(validIds[i], dataUrl); // Save back to DB
           validIds.splice(i, 1);
           break;
         }
       }
-      if (validIds.length === 0) break; // Stop entirely if we found all students to save memory!
+      if (validIds.length === 0) break;
     }
   } catch (e) {
     Logger.log("Error in getMultipleAvatars: " + e.message);
@@ -937,13 +984,28 @@ function uploadStudentAvatar(id, dataUrl) {
     const oldFiles = folder.searchFiles('title contains "' + id + '"');
     while (oldFiles.hasNext()) oldFiles.next().setTrashed(true);
     const split = dataUrl.split(",");
-    folder.createFile(
+    const file = folder.createFile(
       Utilities.newBlob(
         Utilities.base64Decode(split[1]),
         split[0].split(";")[0].replace("data:", ""),
         id + "_avatar",
       ),
     );
+
+    // Save URL to Credentials sheet
+    const ss = SpreadsheetApp.openById(MASTER_ID);
+    const credSheet = ss.getSheetByName("Credentials");
+    if (credSheet) {
+      const credData = credSheet.getDataRange().getValues();
+      for (let i = 1; i < credData.length; i++) {
+        if (String(credData[i][0]).trim() === id) {
+          // Column E (index 4) is Avatar URL
+          credSheet.getRange(i + 1, 5).setValue(file.getId());
+          break;
+        }
+      }
+    }
+
     return { success: true };
   } catch (err) {
     return { success: false, message: err.message };
@@ -956,6 +1018,21 @@ function removeStudentAvatar(id) {
       'title contains "' + id + '"',
     );
     while (files.hasNext()) files.next().setTrashed(true);
+
+    // Remove URL from Credentials sheet
+    const ss = SpreadsheetApp.openById(MASTER_ID);
+    const credSheet = ss.getSheetByName("Credentials");
+    if (credSheet) {
+      const credData = credSheet.getDataRange().getValues();
+      for (let i = 1; i < credData.length; i++) {
+        if (String(credData[i][0]).trim() === id) {
+          // Column E (index 4) is Avatar URL
+          credSheet.getRange(i + 1, 5).setValue("");
+          break;
+        }
+      }
+    }
+
     return { success: true };
   } catch (err) {
     return { success: false, message: err.message };
@@ -1092,6 +1169,139 @@ function fetchRawHtmlContent(fileId) {
   try {
     const file = DriveApp.getFileById(fileId);
     return { success: true, content: file.getBlob().getDataAsString() };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+}
+
+function checkStudentBirthdate(id, bdate) {
+  try {
+    const ss = SpreadsheetApp.openById(MASTER_ID);
+    const credSheet = ss.getSheetByName("Credentials");
+    if (!credSheet) return { success: false, message: "Database Error" };
+
+    const credData = credSheet.getDataRange().getValues();
+    for (let i = 1; i < credData.length; i++) {
+      if (String(credData[i][0]).trim() === String(id).trim()) {
+        const storedBdate = credData[i][1];
+        let match = false;
+        if (storedBdate instanceof Date) {
+            let y = storedBdate.getFullYear();
+            let m = (storedBdate.getMonth() + 1).toString().padStart(2, "0");
+            let d = storedBdate.getDate().toString().padStart(2, "0");
+            match = (`${y}-${m}-${d}` === bdate);
+        } else {
+            let parsed = new Date(storedBdate);
+            if (!isNaN(parsed.getTime())) {
+                let y = parsed.getFullYear();
+                let m = (parsed.getMonth() + 1).toString().padStart(2, "0");
+                let d = parsed.getDate().toString().padStart(2, "0");
+                match = (`${y}-${m}-${d}` === bdate);
+            } else {
+                match = (String(storedBdate).trim() === bdate);
+            }
+        }
+
+        if (match) {
+            return { success: true };
+        } else {
+            return { success: false, message: "Incorrect Birthdate" };
+        }
+      }
+    }
+    return { success: false, message: "Student not found" };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+}
+
+function generateAndSendOTPToEmail(email) {
+  try {
+    email = String(email).trim();
+    if (!email) return { success: false, message: "Invalid email." };
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const cache = CacheService.getScriptCache();
+    cache.put("SETUP_OTP_" + email, otp, 600);
+
+    MailApp.sendEmail({
+      to: email,
+      subject: "Portal Verification OTP",
+      htmlBody: `<p>Your OTP for verification is: <b>${otp}</b></p><p>This OTP will expire in 10 minutes.</p>`
+    });
+
+    return { success: true, message: "OTP sent to " + email };
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+}
+
+function completeStudentSetup(id, email, otp, newPassword, avatarDataUrl) {
+  try {
+    id = String(id).trim();
+    email = String(email).trim();
+    otp = String(otp).trim();
+    newPassword = String(newPassword).trim();
+
+    if (!id || !email || !otp || !newPassword || !avatarDataUrl) {
+      return { success: false, message: "All fields are required." };
+    }
+
+    const cache = CacheService.getScriptCache();
+    const cachedOtp = cache.get("SETUP_OTP_" + email);
+
+    if (!cachedOtp) return { success: false, message: "OTP expired or invalid." };
+    if (cachedOtp !== otp) return { success: false, message: "Incorrect OTP." };
+
+    const ss = SpreadsheetApp.openById(MASTER_ID);
+    const credSheet = ss.getSheetByName("Credentials");
+    const credData = credSheet.getDataRange().getValues();
+    const headers = credData[0];
+
+    const passIndex = headers.indexOf("Password");
+    const emailIndex = headers.indexOf("Email");
+    const lastChangeIndex = headers.indexOf("Last Password Change");
+    let setupIndex = headers.indexOf("Setup Completed");
+
+    if (setupIndex === -1) {
+        setupIndex = credSheet.getLastColumn();
+        credSheet.getRange(1, setupIndex + 1).setValue("Setup Completed");
+    }
+
+    let rowIndex = -1;
+    for (let i = 1; i < credData.length; i++) {
+      if (String(credData[i][0]).trim() === id) {
+        rowIndex = i + 1;
+        break;
+      }
+    }
+
+    if (rowIndex === -1) return { success: false, message: "Student ID not found." };
+
+    // Save image to drive instead of base64 in sheet
+    const folder = DriveApp.getFolderById(PROFILE_FOLDER_ID);
+    const oldFiles = folder.searchFiles('title contains "' + id + '"');
+    while (oldFiles.hasNext()) oldFiles.next().setTrashed(true);
+
+    const split = avatarDataUrl.split(",");
+    const file = folder.createFile(
+      Utilities.newBlob(
+        Utilities.base64Decode(split[1]),
+        split[0].split(";")[0].replace("data:", ""),
+        id + "_avatar"
+      )
+    );
+    const avatarIdUrl = file.getId();
+
+    credSheet.getRange(rowIndex, passIndex + 1).setValue(newPassword);
+    credSheet.getRange(rowIndex, emailIndex + 1).setValue(email);
+    credSheet.getRange(rowIndex, 5).setValue(avatarIdUrl); // Column E
+    if (lastChangeIndex !== -1) credSheet.getRange(rowIndex, lastChangeIndex + 1).setValue(new Date().toLocaleDateString("en-US"));
+    credSheet.getRange(rowIndex, setupIndex + 1).setValue(true);
+
+    cache.remove("SETUP_OTP_" + email);
+
+    return { success: true, message: "Setup complete! Please log in again." };
   } catch (err) {
     return { success: false, message: err.message };
   }
