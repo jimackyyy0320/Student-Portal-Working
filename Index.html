@@ -2173,6 +2173,47 @@
         </div>
       </div>
 
+      <div id="mandatory-setup-modal" class="modal-overlay hidden" style="z-index: 8500;">
+        <div class="modal-box" style="padding: 40px 28px 36px; text-align: left; border-radius: 20px; max-height: 90vh; overflow-y: auto; max-width: 500px;">
+          <h2 style="font-family: 'Cormorant Garamond', serif; font-size: 24px; font-weight: 700; color: var(--forest); margin: 0 0 16px; text-align: center;">Mandatory Account Setup</h2>
+          <p style="font-size: 13px; color: var(--ink-3); margin-bottom: 20px; text-align: center;">To secure your account and improve performance, you must verify your details, update your password, and upload a profile picture.</p>
+          <div id="setup-msg" style="text-align: center; color: var(--burg); margin-bottom: 12px; font-weight: 600; font-size: 13px;"></div>
+
+          <div id="setup-step-1">
+            <div class="input-wrap">
+              <span class="input-icon">📅</span><input type="date" id="setup-bdate" placeholder="Confirm Birthdate" />
+            </div>
+            <div class="input-wrap">
+              <span class="input-icon">✉️</span><input type="email" id="setup-email" placeholder="Active Email Address" />
+            </div>
+            <button class="btn-primary" id="btn-setup-send" onclick="handleSetupSendOTP()">Send OTP</button>
+          </div>
+
+          <div id="setup-step-2" class="hidden">
+            <div class="auth-warning" style="background: var(--emerald-bg); color: var(--emerald); border-color: var(--emerald-bdr);">✅ OTP sent to your email.</div>
+            <div class="input-wrap">
+              <span class="input-icon">🔢</span><input type="text" id="setup-otp" placeholder="Enter 6-digit OTP" autocomplete="off" />
+            </div>
+            <div class="input-wrap">
+              <span class="input-icon">🔒</span><input type="password" id="setup-new-pass" placeholder="Create New Password" />
+            </div>
+            <button class="btn-primary" id="btn-setup-verify" onclick="handleSetupVerify()">Verify & Continue</button>
+            <button class="btn-back-single" style="margin-top: 10px;" onclick="S('setup-step-2').classList.add('hidden'); S('setup-step-1').classList.remove('hidden');">← Back</button>
+          </div>
+
+          <div id="setup-step-3" class="hidden" style="text-align: center;">
+             <p style="font-size: 13px; color: var(--ink-3); margin-bottom: 15px;">Upload a clear, square profile picture.</p>
+             <div style="width: 150px; height: 150px; margin: 0 auto 20px; border-radius: 50%; background: var(--parchment-dk); display: flex; align-items: center; justify-content: center; font-size: 48px; position: relative; overflow: hidden; cursor: pointer;" onclick="S('setup-pic-upload').click()">
+                <span id="setup-avatar-placeholder">👤</span>
+                <img id="setup-avatar-preview" class="hidden" style="width: 100%; height: 100%; object-fit: cover; position: absolute; inset: 0;" />
+             </div>
+             <input type="file" id="setup-pic-upload" accept="image/png, image/jpeg" class="hidden" onchange="handleSetupFileSelect(event)" />
+             <div style="font-size: 12px; color: var(--gold-dark); margin-bottom: 20px; font-weight: 700; cursor: pointer;" onclick="S('setup-pic-upload').click()">📸 Choose Image</div>
+             <button class="btn-primary" id="btn-setup-finish" onclick="handleSetupFinish()">Complete Setup</button>
+          </div>
+        </div>
+      </div>
+
       <div id="profile-screen" class="modal-overlay hidden" style="z-index: 8000;">
         <div
           class="modal-box"
@@ -3558,7 +3599,14 @@
 
             show("main-container");
             show("profile-screen");
-            if (isComplete) {
+            if (p.setupCompleted === false) {
+              hide("profile-screen");
+              show("mandatory-setup-modal");
+              S("setup-email").value = p.email || "";
+              S("setup-step-1").classList.remove("hidden");
+              S("setup-step-2").classList.add("hidden");
+              S("setup-step-3").classList.add("hidden");
+            } else if (isComplete) {
               proceedToSubjects();
             } else {
               populateProfileEdit();
@@ -4219,7 +4267,14 @@
                 show("main-container");
                 window.scrollTo(0, 0);
 
-                if (isComplete) {
+                if (!p.setupCompleted) {
+                  hide("profile-screen");
+                  show("mandatory-setup-modal");
+                  S("setup-email").value = p.email || "";
+                  S("setup-step-1").classList.remove("hidden");
+                  S("setup-step-2").classList.add("hidden");
+                  S("setup-step-3").classList.add("hidden");
+                } else if (isComplete) {
                   proceedToSubjects();
                 } else {
                   populateProfileEdit();
@@ -4257,7 +4312,14 @@
                 show("main-container");
                 window.scrollTo(0, 0);
 
-                if (isComplete) {
+                if (!p.setupCompleted) {
+                  hide("profile-screen");
+                  show("mandatory-setup-modal");
+                  S("setup-email").value = p.email || "";
+                  S("setup-step-1").classList.remove("hidden");
+                  S("setup-step-2").classList.add("hidden");
+                  S("setup-step-3").classList.add("hidden");
+                } else if (isComplete) {
                   proceedToSubjects();
                 } else {
                   populateProfileEdit();
@@ -5214,6 +5276,145 @@
         S("btn-upload-avatar").style.display = "block";
         S("avatar-wrap-el").classList.remove("no-edit");
         window.scrollTo(0, 0);
+      }
+    </script>
+
+      // Mandatory Setup Functions
+      let setupAvatarDataUrl = null;
+
+      function handleSetupSendOTP() {
+         const bdate = S("setup-bdate").value;
+         const email = S("setup-email").value.trim();
+         const msg = S("setup-msg");
+
+         if (!bdate || !email) {
+            msg.innerText = "⚠️ Please provide birthdate and email.";
+            return;
+         }
+
+         setBtn("btn-setup-send", true, "Verifying...");
+         msg.innerText = "";
+
+         google.script.run
+            .withSuccessHandler((res) => {
+               if (!res.success) {
+                  setBtn("btn-setup-send", false, "Send OTP");
+                  msg.innerText = "⚠️ " + res.message;
+                  return;
+               }
+
+               google.script.run
+                  .withSuccessHandler((otpRes) => {
+                     setBtn("btn-setup-send", false, "Send OTP");
+                     if (!otpRes.success) {
+                        msg.innerText = "⚠️ " + otpRes.message;
+                        return;
+                     }
+                     hide("setup-step-1");
+                     show("setup-step-2");
+                  })
+                  .withFailureHandler(() => {
+                     setBtn("btn-setup-send", false, "Send OTP");
+                     msg.innerText = "⚠️ Error sending OTP.";
+                  })
+                  .generateAndSendOTPToEmail(email);
+            })
+            .withFailureHandler(() => {
+               setBtn("btn-setup-send", false, "Send OTP");
+               msg.innerText = "⚠️ Error verifying birthdate.";
+            })
+            .checkStudentBirthdate(state.id, bdate);
+      }
+
+      function handleSetupVerify() {
+         const otp = S("setup-otp").value.trim();
+         const newPass = S("setup-new-pass").value;
+         const msg = S("setup-msg");
+
+         if (!otp || !newPass) {
+            msg.innerText = "⚠️ Please enter OTP and new password.";
+            return;
+         }
+
+         hide("setup-step-2");
+         show("setup-step-3");
+         msg.innerText = "";
+      }
+
+      function handleSetupFileSelect(e) {
+         const f = e.target.files[0];
+         if (!f) return;
+         if (f.size > 3000000) {
+            alert("Image too large (Max 3MB).");
+            return;
+         }
+         const r = new FileReader();
+         r.onload = (ev) => {
+            S("crop-image").src = ev.target.result;
+            show("crop-modal");
+            if (cropper) cropper.destroy();
+            cropper = new Cropper(S("crop-image"), {
+               aspectRatio: 1,
+               viewMode: 1,
+               background: false,
+            });
+
+            // Override applyCrop temporarily
+            window._oldApplyCrop = window.applyCrop;
+            window.applyCrop = function() {
+               if (!cropper) return;
+               hide("crop-modal");
+               const canvas = cropper.getCroppedCanvas({ width: 300, height: 300 });
+               setupAvatarDataUrl = canvas.toDataURL("image/jpeg", 0.8);
+               S("setup-avatar-preview").src = setupAvatarDataUrl;
+               S("setup-avatar-preview").classList.remove("hidden");
+               S("setup-avatar-placeholder").classList.add("hidden");
+               cropper.destroy();
+               cropper = null;
+               window.applyCrop = window._oldApplyCrop;
+            };
+
+            window._oldCancelCrop = window.cancelCrop;
+            window.cancelCrop = function() {
+               hide("crop-modal");
+               if (cropper) {
+                 cropper.destroy();
+                 cropper = null;
+               }
+               window.applyCrop = window._oldApplyCrop;
+               window.cancelCrop = window._oldCancelCrop;
+            };
+         };
+         r.readAsDataURL(f);
+         S("setup-pic-upload").value = "";
+      }
+
+      function handleSetupFinish() {
+         if (!setupAvatarDataUrl) {
+            S("setup-msg").innerText = "⚠️ Please upload a profile picture.";
+            return;
+         }
+
+         setBtn("btn-setup-finish", true, "Saving...");
+         const email = S("setup-email").value.trim();
+         const otp = S("setup-otp").value.trim();
+         const newPass = S("setup-new-pass").value;
+
+         google.script.run
+            .withSuccessHandler((res) => {
+               setBtn("btn-setup-finish", false, "Complete Setup");
+               if (res.success) {
+                  alert(res.message);
+                  resetApp(); // Force re-login
+               } else {
+                  S("setup-msg").innerText = "⚠️ " + res.message;
+               }
+            })
+            .withFailureHandler(() => {
+               setBtn("btn-setup-finish", false, "Complete Setup");
+               S("setup-msg").innerText = "⚠️ Error completing setup.";
+            })
+            .completeStudentSetup(state.id, email, otp, newPass, setupAvatarDataUrl);
       }
     </script>
 
